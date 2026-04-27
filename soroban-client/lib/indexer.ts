@@ -19,25 +19,55 @@ export type ContractEventType =
   | "FundsWithdrawn"
   | "EventUpdated";
 
-export interface IndexedEvent {
-  id: string;           // "<ledger>-<txIndex>-<opIndex>-<eventIndex>"
+export type EventStatus = "active" | "canceled" | "completed";
+
+export interface BaseIndexedEvent {
+  id: string; // "<ledger>-<txIndex>-<opIndex>-<eventIndex>"
   type: ContractEventType;
   ledger: number;
   ledgerClosedAt: string; // ISO timestamp
   txHash: string;
   contractId: string;
-  // Decoded payload fields
-  eventId?: number;
-  organizer?: string;
-  buyer?: string;
-  ticketPrice?: string;
-  totalTickets?: number;
-  ticketsSold?: number;
-  theme?: string;
-  startDate?: number;
-  endDate?: number;
-  status: "active" | "canceled" | "completed";
+  status: EventStatus;
 }
+
+export interface EventCreatedIndexedEvent extends BaseIndexedEvent {
+  type: "EventCreated";
+  eventId: number;
+  organizer?: string;
+  ticketPrice?: string;
+}
+
+export interface TicketPurchasedIndexedEvent extends BaseIndexedEvent {
+  type: "TicketPurchased";
+  eventId: number;
+  buyer?: string;
+}
+
+export interface EventCanceledIndexedEvent extends BaseIndexedEvent {
+  type: "EventCanceled";
+  eventId: number;
+  organizer?: string;
+}
+
+export interface FundsWithdrawnIndexedEvent extends BaseIndexedEvent {
+  type: "FundsWithdrawn";
+  eventId: number;
+  organizer?: string;
+}
+
+export interface EventUpdatedIndexedEvent extends BaseIndexedEvent {
+  type: "EventUpdated";
+  eventId: number;
+  organizer?: string;
+}
+
+export type IndexedEvent =
+  | EventCreatedIndexedEvent
+  | TicketPurchasedIndexedEvent
+  | EventCanceledIndexedEvent
+  | FundsWithdrawnIndexedEvent
+  | EventUpdatedIndexedEvent;
 
 interface Cache {
   events: IndexedEvent[];
@@ -192,7 +222,9 @@ function decodeI128(b64: string): string {
 function decodeEvent(raw: HorizonContractEvent): IndexedEvent | null {
   if (!raw.topic || raw.topic.length === 0) return null;
 
-  const eventType = decodeSymbol(raw.topic[0]?.value ?? "") as ContractEventType;
+  const eventType = decodeSymbol(
+    raw.topic[0]?.value ?? "",
+  ) as ContractEventType;
   const knownTypes: ContractEventType[] = [
     "EventCreated",
     "TicketPurchased",
@@ -202,7 +234,7 @@ function decodeEvent(raw: HorizonContractEvent): IndexedEvent | null {
   ];
   if (!knownTypes.includes(eventType)) return null;
 
-  const base: IndexedEvent = {
+  const base: BaseIndexedEvent = {
     id: raw.id,
     type: eventType,
     ledger: raw.ledger,
@@ -212,38 +244,60 @@ function decodeEvent(raw: HorizonContractEvent): IndexedEvent | null {
     status: "active",
   };
 
-  // topic[1] is typically the event_id (u32)
-  if (raw.topic[1]) base.eventId = decodeU32(raw.topic[1].value);
-
-  // value contains the main payload map — decode known fields by event type
-  switch (eventType) {
-    case "EventCreated":
-      if (raw.topic[2]) base.organizer = decodeAddress(raw.topic[2].value);
-      base.ticketPrice = decodeI128(raw.value.value);
-      break;
-    case "TicketPurchased":
-      if (raw.topic[2]) base.buyer = decodeAddress(raw.topic[2].value);
-      break;
-    case "EventCanceled":
-      base.status = "canceled";
-      if (raw.topic[2]) base.organizer = decodeAddress(raw.topic[2].value);
-      break;
-    case "FundsWithdrawn":
-      if (raw.topic[2]) base.organizer = decodeAddress(raw.topic[2].value);
-      break;
-    case "EventUpdated":
-      if (raw.topic[2]) base.organizer = decodeAddress(raw.topic[2].value);
-      break;
+  const eventId = raw.topic[1] ? decodeU32(raw.topic[1].value) : undefined;
+  if (eventId === undefined) {
+    return null;
   }
 
-  return base;
+  switch (eventType) {
+    case "EventCreated":
+      return {
+        ...base,
+        type: "EventCreated",
+        eventId,
+        organizer: raw.topic[2] ? decodeAddress(raw.topic[2].value) : undefined,
+        ticketPrice: decodeI128(raw.value.value),
+      };
+    case "TicketPurchased":
+      return {
+        ...base,
+        type: "TicketPurchased",
+        eventId,
+        buyer: raw.topic[2] ? decodeAddress(raw.topic[2].value) : undefined,
+      };
+    case "EventCanceled":
+      return {
+        ...base,
+        type: "EventCanceled",
+        eventId,
+        status: "canceled",
+        organizer: raw.topic[2] ? decodeAddress(raw.topic[2].value) : undefined,
+      };
+    case "FundsWithdrawn":
+      return {
+        ...base,
+        type: "FundsWithdrawn",
+        eventId,
+        organizer: raw.topic[2] ? decodeAddress(raw.topic[2].value) : undefined,
+      };
+    case "EventUpdated":
+      return {
+        ...base,
+        type: "EventUpdated",
+        eventId,
+        organizer: raw.topic[2] ? decodeAddress(raw.topic[2].value) : undefined,
+      };
+  }
+
+  return null;
 }
 
 // ── Fetcher ───────────────────────────────────────────────────────────────────
 
 async function fetchPage(url: string): Promise<HorizonEventsResponse> {
   const res = await fetch(url, { next: { revalidate: 0 } });
-  if (!res.ok) throw new Error(`Horizon error ${res.status}: ${await res.text()}`);
+  if (!res.ok)
+    throw new Error(`Horizon error ${res.status}: ${await res.text()}`);
   return res.json() as Promise<HorizonEventsResponse>;
 }
 
@@ -268,7 +322,8 @@ async function pollHorizon(): Promise<void> {
       const decoded = decodeEvent(raw);
       if (decoded) {
         newEvents.push(decoded);
-        if (decoded.ledger > cache.lastLedger) cache.lastLedger = decoded.ledger;
+        if (decoded.ledger > cache.lastLedger)
+          cache.lastLedger = decoded.ledger;
       }
     }
     url = page._links.next?.href;
@@ -286,7 +341,9 @@ async function pollHorizon(): Promise<void> {
     }
     // Apply cancellation status retroactively
     const canceledIds = new Set(
-      cache.events.filter((e) => e.type === "EventCanceled").map((e) => e.eventId)
+      cache.events
+        .filter((e) => e.type === "EventCanceled")
+        .map((e) => e.eventId),
     );
     for (const ev of cache.events) {
       if (ev.eventId !== undefined && canceledIds.has(ev.eventId)) {
@@ -317,8 +374,8 @@ export async function getIndexedEvents(): Promise<IndexedEvent[]> {
 export interface EventQueryParams {
   organizer?: string;
   status?: "active" | "canceled" | "completed";
-  from?: number;   // unix timestamp
-  to?: number;     // unix timestamp
+  from?: number; // unix timestamp
+  to?: number; // unix timestamp
   type?: ContractEventType;
   limit?: number;
   offset?: number;
@@ -379,11 +436,11 @@ export function getEventsAfterCursor(cursor: string): IndexedEvent[] {
   }
 
   // Parse the cursor to extract the ledger number
-  const cursorLedger = parseInt(cursor.split('-')[0], 10);
+  const cursorLedger = parseInt(cursor.split("-")[0], 10);
   if (isNaN(cursorLedger)) {
     return cache.events;
   }
 
   // Return events that occurred after the cursor ledger
-  return cache.events.filter(event => event.ledger > cursorLedger);
+  return cache.events.filter((event) => event.ledger > cursorLedger);
 }

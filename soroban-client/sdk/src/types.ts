@@ -8,6 +8,62 @@ export type ContractName =
   | "tbaRegistry"
   | "tbaAccount";
 
+export type ContractEventType =
+  | "EventCreated"
+  | "TicketPurchased"
+  | "EventCanceled"
+  | "FundsWithdrawn"
+  | "EventUpdated";
+
+export type ContractEventStatus = "active" | "canceled" | "completed";
+
+export interface ContractEventBase {
+  readonly type: ContractEventType;
+  readonly contractId: string;
+  readonly txHash: string;
+  readonly ledger: number;
+  readonly ledgerClosedAt: string;
+  readonly status: ContractEventStatus;
+}
+
+export interface EventCreatedContractEvent extends ContractEventBase {
+  readonly type: "EventCreated";
+  readonly eventId: number;
+  readonly organizer?: string;
+  readonly ticketPrice?: string;
+}
+
+export interface TicketPurchasedContractEvent extends ContractEventBase {
+  readonly type: "TicketPurchased";
+  readonly eventId: number;
+  readonly buyer?: string;
+}
+
+export interface EventCanceledContractEvent extends ContractEventBase {
+  readonly type: "EventCanceled";
+  readonly eventId: number;
+  readonly organizer?: string;
+}
+
+export interface FundsWithdrawnContractEvent extends ContractEventBase {
+  readonly type: "FundsWithdrawn";
+  readonly eventId: number;
+  readonly organizer?: string;
+}
+
+export interface EventUpdatedContractEvent extends ContractEventBase {
+  readonly type: "EventUpdated";
+  readonly eventId: number;
+  readonly organizer?: string;
+}
+
+export type ContractEvent =
+  | EventCreatedContractEvent
+  | TicketPurchasedContractEvent
+  | EventCanceledContractEvent
+  | FundsWithdrawnContractEvent
+  | EventUpdatedContractEvent;
+
 export type AddressLike = string;
 export type Bytes32Like = string | Uint8Array;
 
